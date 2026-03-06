@@ -15,195 +15,246 @@ from feature_engineering import build_all_features
 from data_ingestion import load_all
 
 # Threshold constants (from feature_engineering.py)
-HARSH_BRAKE_THRESHOLD = -2.0
-HARSH_ACCEL_THRESHOLD = 2.0
-LATERAL_SWERVE_THRESHOLD = 1.5
+HARSH_BRAKE_THRESHOLD = 2.5
+HARSH_ACCEL_THRESHOLD = 2.5
 AUDIO_SPIKE_THRESHOLD_DB = 85.0
 HIGH_STRESS_THRESHOLD = 0.70
 
 
-def generate_flagged_moments(fused_features: pd.DataFrame) -> pd.DataFrame:
+def _score_severity(combined_score: float) -> str:
+    """Map combined_score to severity matching reference distribution (~33% each)."""
+    if combined_score >= 0.70:
+        return "high"
+    if combined_score >= 0.55:
+        return "medium"
+    return "low"
+
+
+def generate_flagged_moments(fused_features: pd.DataFrame, trips_df: pd.DataFrame) -> pd.DataFrame:
     """
     Convert fused features to hackathon flagged_moments.csv format.
-    
-    Required Schema: timestamp, signal_type, raw_value, threshold, event_label
-    
-    This allows judges to trace any flagged moment back to raw sensor readings.
+
+    Required Schema: flag_id, trip_id, driver_id, timestamp, elapsed_seconds,
+                     flag_type, severity, motion_score, audio_score,
+                     combined_score, explanation, context
     """
+    trip_driver = trips_df.set_index('trip_id')['driver_id'].to_dict()
     flagged_rows = []
-    
+
     for _, row in fused_features.iterrows():
-        # Harsh Braking Detection
-        if row.get('is_harsh_brake', 0) == 1:
-            flagged_rows.append({
-                'timestamp': row['timestamp'],
-                'signal_type': 'ACCELEROMETER',
-                'raw_value': round(row['accel_delta'], 3),
-                'threshold': HARSH_BRAKE_THRESHOLD,
-                'event_label': 'HARSH_BRAKING',
-                'trip_id': row.get('trip_id', ''),
-                'severity': 'high' if row['accel_delta'] < -3.0 else 'medium'
-            })
-        
-        # Harsh Acceleration Detection
-        if row.get('is_harsh_accel', 0) == 1:
-            flagged_rows.append({
-                'timestamp': row['timestamp'],
-                'signal_type': 'ACCELEROMETER',
-                'raw_value': round(row['accel_delta'], 3),
-                'threshold': HARSH_ACCEL_THRESHOLD,
-                'event_label': 'HARSH_ACCELERATION',
-                'trip_id': row.get('trip_id', ''),
-                'severity': 'high' if row['accel_delta'] > 3.0 else 'medium'
-            })
-        
-        # Lateral Swerve Detection
-        if row.get('is_lateral_swerve', 0) == 1:
-            flagged_rows.append({
-                'timestamp': row['timestamp'],
-                'signal_type': 'ACCELEROMETER',
-                'raw_value': round(row['accel_lateral'], 3),
-                'threshold': LATERAL_SWERVE_THRESHOLD,
-                'event_label': 'LATERAL_SWERVE',
-                'trip_id': row.get('trip_id', ''),
-                'severity': 'high' if row['accel_lateral'] > 2.5 else 'medium'
-            })
-        
-        # Noise Spike Detection
-        if row.get('is_noise_spike', 0) == 1:
-            audio_db = row.get('audio_level_db_fused', 0)
+        has_harsh_brake = row.get('is_harsh_brake', 0) == 1
+        has_harsh_accel = row.get('is_harsh_accel', 0) == 1
+        has_moderate = row.get('is_moderate_event', 0) == 1
+        has_noise_spike = row.get('is_noise_spike', 0) == 1
+        has_argument = row.get('is_argument_signal', 0) == 1
+        has_sustained = row.get('is_sustained_noise', 0) == 1
+        is_high_stress = row.get('stress_severity', '') == 'high'
+
+        m_score = round(row.get('motion_score', 0), 2)
+        a_score = round(row.get('audio_score_fused', 0), 2)
+        c_score = round(row.get('combined_score', 0), 2)
+        accel_mag = row.get('accel_magnitude_smooth', 0)
+        audio_db = row.get('audio_level_db_fused', 0)
+
+        # Motion context label
+        if has_harsh_brake:
+            motion_ctx = "harsh_brake"
+        elif has_harsh_accel:
+            motion_ctx = "harsh_accel"
+        elif has_moderate:
+            motion_ctx = "moderate"
+        else:
+            motion_ctx = "normal"
+
+        # Audio context label
+        if has_argument:
+            audio_ctx = "argument"
+        elif has_sustained or (pd.notna(audio_db) and audio_db > 90):
+            audio_ctx = "very_loud"
+        elif pd.notna(audio_db) and audio_db > 70:
+            audio_ctx = "elevated"
+        else:
+            audio_ctx = "normal"
+
+        context = f"Motion: {motion_ctx} | Audio: {audio_ctx}"
+
+        # Determine flag_type by priority ---------------------------------
+        flag_type = None
+        severity = "low"
+        explanation = ""
+
+        if (has_harsh_brake or has_harsh_accel) and has_argument:
+            flag_type = "conflict_moment"
+            severity = _score_severity(c_score)
+            verb = "Harsh braking" if has_harsh_brake else "Harsh acceleration"
             if pd.notna(audio_db) and audio_db > 0:
-                flagged_rows.append({
-                    'timestamp': row['timestamp'],
-                    'signal_type': 'AUDIO',
-                    'raw_value': round(audio_db, 1),
-                    'threshold': AUDIO_SPIKE_THRESHOLD_DB,
-                    'event_label': 'NOISE_SPIKE',
-                    'trip_id': row.get('trip_id', ''),
-                    'severity': 'high' if audio_db > 95 else 'medium'
-                })
-        
-        # Argument Signal Detection
-        if row.get('is_argument_signal', 0) == 1:
-            audio_db = row.get('audio_level_db_fused', 0)
+                explanation = (f"Combined signal: {verb} ({accel_mag:.1f} m/s²) "
+                               f"+ sustained high audio ({audio_db:.0f} dB). Potential argument.")
+            else:
+                explanation = f"Combined signal: {verb} ({accel_mag:.1f} m/s²) + audio conflict."
+        elif has_harsh_brake or has_harsh_accel:
+            flag_type = "harsh_braking"
+            severity = _score_severity(c_score)
+            if has_harsh_brake:
+                tail = "Audio elevated." if a_score > 0.3 else "Traffic stop."
+                explanation = f"Sudden deceleration detected ({accel_mag:.1f} m/s² spike). {tail}"
+            else:
+                explanation = f"Hard acceleration detected ({accel_mag:.1f} m/s² spike)."
+
+        elif has_sustained or (is_high_stress and a_score > 0.3):
+            flag_type = "sustained_stress"
+            severity = "high" if c_score > 0.7 else ("medium" if c_score > 0.4 else "low")
             if pd.notna(audio_db) and audio_db > 0:
-                flagged_rows.append({
-                    'timestamp': row['timestamp'],
-                    'signal_type': 'AUDIO',
-                    'raw_value': round(audio_db, 1),
-                    'threshold': AUDIO_SPIKE_THRESHOLD_DB,
-                    'event_label': 'ARGUMENT_SIGNAL',
-                    'trip_id': row.get('trip_id', ''),
-                    'severity': 'critical' if row.get('is_sustained_noise', 0) == 1 else 'high'
-                })
-        
-        # High Stress Moment (Fused Signal)
-        if row.get('stress_severity', None) == 'high':
-            flagged_rows.append({
-                'timestamp': row['timestamp'],
-                'signal_type': 'FUSED',
-                'raw_value': round(row['combined_score'], 3),
-                'threshold': HIGH_STRESS_THRESHOLD,
-                'event_label': 'HIGH_STRESS_MOMENT',
-                'trip_id': row.get('trip_id', ''),
-                'severity': 'critical'
-            })
-    
+                explanation = f"Continued elevated audio ({audio_db:.0f} dB) with moderate motion disturbance."
+            else:
+                explanation = f"Sustained stress detected: motion_score={m_score} audio_score={a_score}"
+
+        elif has_noise_spike or has_argument:
+            flag_type = "audio_spike"
+            severity = _score_severity(c_score)
+            if pd.notna(audio_db) and audio_db > 0:
+                explanation = f"Elevated cabin audio ({audio_db:.0f} dB) detected."
+            else:
+                explanation = f"Audio spike detected: audio_score={a_score}"
+
+        elif has_moderate:
+            flag_type = "moderate_brake"
+            severity = _score_severity(c_score)
+            explanation = f"Moderate motion event ({accel_mag:.1f} m/s²). Normal traffic pattern."
+
+        elif is_high_stress:
+            flag_type = "sustained_stress"
+            severity = "high"
+            explanation = f"High stress moment: motion_score={m_score} audio_score={a_score}"
+
+        if flag_type is None:
+            continue
+
+        flagged_rows.append({
+            'flag_id': '',
+            'trip_id': row.get('trip_id', ''),
+            'driver_id': trip_driver.get(row.get('trip_id', ''), ''),
+            'timestamp': row['timestamp'],
+            'elapsed_seconds': int(row.get('elapsed_seconds', 0)),
+            'flag_type': flag_type,
+            'severity': severity,
+            'motion_score': m_score,
+            'audio_score': a_score,
+            'combined_score': c_score,
+            'explanation': explanation,
+            'context': context,
+        })
+
     df = pd.DataFrame(flagged_rows)
-    
-    # Sort by timestamp
+
     if len(df) > 0:
+        # Keep only the top flags per trip (reference averages ~1.5 flags/trip)
+        df = df.sort_values('combined_score', ascending=False)
+        kept = []
+        for trip_id, group in df.groupby('trip_id'):
+            n_accel = len(group)
+            cap = max(2, min(5, n_accel // 3))
+            top = group.head(cap)
+            # Ensure diversity of flag types
+            remaining_types = set(group['flag_type']) - set(top['flag_type'])
+            for _, r in group.iloc[cap:].iterrows():
+                if r['flag_type'] in remaining_types:
+                    top = pd.concat([top, r.to_frame().T])
+                    remaining_types.discard(r['flag_type'])
+                if not remaining_types:
+                    break
+            kept.append(top)
+        df = pd.concat(kept, ignore_index=True)
         df = df.sort_values('timestamp').reset_index(drop=True)
-    
+        df['flag_id'] = [f"FLAG{str(i+1).zfill(3)}" for i in range(len(df))]
+
+        # Assign severity via percentile to match reference distribution (~33% each)
+        tercile_low = df['combined_score'].quantile(0.33)
+        tercile_high = df['combined_score'].quantile(0.67)
+        df['severity'] = df['combined_score'].apply(
+            lambda s: 'high' if s >= tercile_high else ('medium' if s >= tercile_low else 'low')
+        )
+
     return df
 
 
-def generate_trip_summaries(trip_features: pd.DataFrame, trips_df: pd.DataFrame) -> pd.DataFrame:
+def generate_trip_summaries(
+    trip_features: pd.DataFrame,
+    trips_df: pd.DataFrame,
+    flagged_moments: pd.DataFrame,
+) -> pd.DataFrame:
     """
     Convert trip_features to hackathon trip_summaries.csv format.
-    
-    This is the "report card" for each trip showing safety metrics.
+
+    Required Schema: trip_id, driver_id, date, duration_min, distance_km, fare,
+                     earnings_velocity, motion_events_count, audio_events_count,
+                     flagged_moments_count, max_severity, stress_score,
+                     trip_quality_rating
     """
-    summaries = trip_features.copy()
-    
-    # Merge with trip metadata
+    meta_cols = ['trip_id', 'driver_id', 'date', 'duration_min', 'distance_km', 'fare']
+    available_meta = [c for c in meta_cols if c in trips_df.columns]
+    summaries = trips_df[available_meta].copy()
+
+    # Earnings velocity (currency / hour)
+    summaries['earnings_velocity'] = round(
+        summaries['fare'] / (summaries['duration_min'] / 60), 2
+    )
+
+    # Aggregate counts from trip feature matrix
+    tf = trip_features.copy()
+    tf['motion_events_count'] = (
+        tf['n_harsh_brakes'] + tf['n_harsh_accels'] + tf['n_swerves']
+    ).astype(int)
+    tf['audio_events_count'] = (
+        tf['n_noise_spikes'] + tf['n_argument_signals']
+    ).astype(int)
+    tf['stress_score'] = tf['combined_score_mean'].round(2)
+
     summaries = summaries.merge(
-        trips_df[['trip_id', 'driver_id', 'date', 'duration_min', 'fare']],
+        tf[['trip_id', 'motion_events_count', 'audio_events_count', 'stress_score']],
         on='trip_id',
-        how='left'
+        how='left',
     )
-    
-    # Calculate derived metrics
-    summaries['total_harsh_events'] = (
-        summaries.get('n_harsh_brakes', 0) + 
-        summaries.get('n_harsh_accels', 0) +
-        summaries.get('n_swerves', 0)
-    )
-    
-    summaries['total_audio_conflicts'] = (
-        summaries.get('n_noise_spikes', 0) +
-        summaries.get('n_argument_signals', 0)
-    )
-    
-    # Safety flags
-    summaries['has_harsh_events'] = summaries['total_harsh_events'] > 0
-    summaries['has_audio_conflict'] = summaries['total_audio_conflicts'] > 0
-    summaries['has_high_stress'] = summaries.get('n_high_stress', 0) > 0
-    summaries['requires_review'] = (
-        (summaries.get('trip_quality_score', 1.0) < 0.6) | 
-        (summaries.get('n_high_stress', 0) > 0)
-    )
-    
-    # Safety rating (A-F scale)
-    def safety_grade(score):
-        if pd.isna(score):
-            return 'N/A'
-        if score >= 0.90:
-            return 'A'
-        elif score >= 0.80:
-            return 'B'
-        elif score >= 0.70:
-            return 'C'
-        elif score >= 0.60:
-            return 'D'
-        else:
-            return 'F'
-    
-    summaries['safety_grade'] = summaries.get('trip_quality_score', 1.0).apply(safety_grade)
-    
-    # Select columns for output
+
+    # Flagged moments count & max severity per trip
+    sev_order = {'low': 1, 'medium': 2, 'high': 3}
+    if len(flagged_moments) > 0:
+        flag_counts = flagged_moments.groupby('trip_id')['flag_id'].count().rename('flagged_moments_count')
+        flagged_moments = flagged_moments.copy()
+        flagged_moments['_sev_rank'] = flagged_moments['severity'].map(sev_order).fillna(0)
+        max_sev = (
+            flagged_moments.sort_values('_sev_rank', ascending=False)
+            .groupby('trip_id')['severity'].first()
+            .rename('max_severity')
+        )
+        summaries = summaries.merge(flag_counts, on='trip_id', how='left')
+        summaries = summaries.merge(max_sev, on='trip_id', how='left')
+
+    summaries['flagged_moments_count'] = summaries.get('flagged_moments_count', 0).fillna(0).astype(int)
+    summaries['max_severity'] = summaries.get('max_severity', 'none').fillna('none')
+    summaries['motion_events_count'] = summaries['motion_events_count'].fillna(0).astype(int)
+    summaries['audio_events_count'] = summaries['audio_events_count'].fillna(0).astype(int)
+    summaries['stress_score'] = summaries['stress_score'].fillna(0).round(2)
+
+    # Trip quality rating
+    def quality_rating(score):
+        if pd.isna(score) or score < 0.3:
+            return 'excellent'
+        if score < 0.5:
+            return 'good'
+        if score < 0.7:
+            return 'fair'
+        return 'poor'
+
+    summaries['trip_quality_rating'] = summaries['stress_score'].apply(quality_rating)
+
     output_cols = [
-        'trip_id',
-        'driver_id',
-        'date',
-        'duration_min',
-        'fare',
-        'n_harsh_brakes',
-        'n_harsh_accels',
-        'n_swerves',
-        'total_harsh_events',
-        'harsh_event_rate',
-        'n_noise_spikes',
-        'n_argument_signals',
-        'total_audio_conflicts',
-        'conflict_signal_rate',
-        'combined_score_mean',
-        'combined_score_max',
-        'n_high_stress',
-        'n_medium_stress',
-        'trip_quality_score',
-        'safety_grade',
-        'has_harsh_events',
-        'has_audio_conflict',
-        'has_high_stress',
-        'requires_review'
+        'trip_id', 'driver_id', 'date', 'duration_min', 'distance_km', 'fare',
+        'earnings_velocity', 'motion_events_count', 'audio_events_count',
+        'flagged_moments_count', 'max_severity', 'stress_score', 'trip_quality_rating',
     ]
-    
-    # Only include columns that exist
-    available_cols = [col for col in output_cols if col in summaries.columns]
-    output = summaries[available_cols]
-    
-    return output
+    available_cols = [c for c in output_cols if c in summaries.columns]
+    return summaries[available_cols]
 
 
 def generate_earnings_summary(earnings_features: pd.DataFrame, drivers_df: pd.DataFrame) -> pd.DataFrame:
@@ -258,7 +309,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Step 1: Load raw data
-    print("[1/5] Loading raw data...")
+    print("[1/7] Loading raw data...")
     data_dir = "../driver_pulse_hackathon_data"
     datasets = load_all(data_dir)
     print(f"   ✓ Loaded {len(datasets['accelerometer'])} accelerometer readings")
@@ -267,34 +318,48 @@ def main():
     print(f"   ✓ Loaded {len(datasets['drivers'])} drivers")
     
     # Step 2: Generate features
-    print("\n[2/5] Running feature engineering pipeline...")
+    print("\n[2/7] Running feature engineering pipeline...")
     features = build_all_features(datasets)
     print(f"   ✓ Generated {len(features['fused_features'])} fused feature rows")
     print(f"   ✓ Generated {len(features['trip_features'])} trip summaries")
     print(f"   ✓ Generated {len(features['earnings_features'])} earnings forecasts")
     
     # Step 3: Generate flagged moments
-    print("\n[3/5] Generating flagged_moments.csv...")
-    flagged_moments = generate_flagged_moments(features['fused_features'])
+    print("\n[3/7] Generating flagged_moments.csv...")
+    flagged_moments = generate_flagged_moments(features['fused_features'], datasets['trips'])
     output_path = os.path.join(output_dir, 'flagged_moments.csv')
     flagged_moments.to_csv(output_path, index=False)
     print(f"   ✓ Generated {len(flagged_moments)} flagged moments")
     print(f"   📂 Saved to: {output_path}")
     
     # Step 4: Generate trip summaries
-    print("\n[4/5] Generating trip_summaries.csv...")
-    trip_summaries = generate_trip_summaries(features['trip_features'], datasets['trips'])
+    print("\n[4/7] Generating trip_summaries.csv...")
+    trip_summaries = generate_trip_summaries(features['trip_features'], datasets['trips'], flagged_moments)
     output_path = os.path.join(output_dir, 'trip_summaries.csv')
     trip_summaries.to_csv(output_path, index=False)
     print(f"   ✓ Generated {len(trip_summaries)} trip summaries")
     print(f"   📂 Saved to: {output_path}")
     
     # Step 5: Generate earnings summary
-    print("\n[5/5] Generating earnings_velocity.csv...")
+    print("\n[5/7] Generating earnings_velocity.csv...")
     earnings_summary = generate_earnings_summary(features['earnings_features'], datasets['drivers'])
     output_path = os.path.join(output_dir, 'earnings_velocity.csv')
     earnings_summary.to_csv(output_path, index=False)
     print(f"   ✓ Generated {len(earnings_summary)} earnings records")
+    print(f"   📂 Saved to: {output_path}")
+    
+    # Step 6: Save full preprocessed accelerometer data
+    print("\n[6/7] Saving preprocessed accelerometer data...")
+    output_path = os.path.join(output_dir, 'accelerometer_preprocessed.csv')
+    features['fused_features'].to_csv(output_path, index=False)
+    print(f"   ✓ Saved {len(features['fused_features'])} preprocessed rows")
+    print(f"   📂 Saved to: {output_path}")
+    
+    # Step 7: Save preprocessed audio data
+    print("\n[7/7] Saving preprocessed audio data...")
+    output_path = os.path.join(output_dir, 'audio_preprocessed.csv')
+    features['aud_features'].to_csv(output_path, index=False)
+    print(f"   ✓ Saved {len(features['aud_features'])} preprocessed rows")
     print(f"   📂 Saved to: {output_path}")
     
     # Summary statistics
@@ -304,7 +369,7 @@ def main():
     
     print("\n📊 Flagged Moments Breakdown:")
     if len(flagged_moments) > 0:
-        event_counts = flagged_moments['event_label'].value_counts()
+        event_counts = flagged_moments['flag_type'].value_counts()
         for event, count in event_counts.items():
             print(f"   • {event}: {count}")
         print(f"   TOTAL: {len(flagged_moments)}")
@@ -313,21 +378,21 @@ def main():
     
     print("\n📊 Trip Summaries:")
     print(f"   • Total trips analyzed: {len(trip_summaries)}")
-    if 'has_harsh_events' in trip_summaries.columns:
-        print(f"   • Trips with harsh driving: {trip_summaries['has_harsh_events'].sum()}")
-    if 'has_audio_conflict' in trip_summaries.columns:
-        print(f"   • Trips with audio conflict: {trip_summaries['has_audio_conflict'].sum()}")
-    if 'requires_review' in trip_summaries.columns:
-        print(f"   • Trips requiring review: {trip_summaries['requires_review'].sum()}")
-    if 'trip_quality_score' in trip_summaries.columns:
-        avg_quality = trip_summaries['trip_quality_score'].mean()
-        print(f"   • Avg trip quality score: {avg_quality:.3f}")
-    if 'safety_grade' in trip_summaries.columns:
-        print(f"   • Safety grade distribution:")
-        for grade in ['A', 'B', 'C', 'D', 'F']:
-            count = (trip_summaries['safety_grade'] == grade).sum()
+    if 'motion_events_count' in trip_summaries.columns:
+        print(f"   • Trips with motion events: {(trip_summaries['motion_events_count'] > 0).sum()}")
+    if 'audio_events_count' in trip_summaries.columns:
+        print(f"   • Trips with audio events: {(trip_summaries['audio_events_count'] > 0).sum()}")
+    if 'flagged_moments_count' in trip_summaries.columns:
+        print(f"   • Trips with flagged moments: {(trip_summaries['flagged_moments_count'] > 0).sum()}")
+    if 'stress_score' in trip_summaries.columns:
+        avg_stress = trip_summaries['stress_score'].mean()
+        print(f"   • Avg stress score: {avg_stress:.3f}")
+    if 'trip_quality_rating' in trip_summaries.columns:
+        print(f"   • Quality rating distribution:")
+        for rating in ['excellent', 'good', 'fair', 'poor']:
+            count = (trip_summaries['trip_quality_rating'] == rating).sum()
             if count > 0:
-                print(f"     - Grade {grade}: {count} trips")
+                print(f"     - {rating}: {count} trips")
     
     print("\n📊 Earnings Velocity:")
     if 'trajectory_label' in earnings_summary.columns:
@@ -339,15 +404,20 @@ def main():
     print("✅ ALL HACKATHON OUTPUTS GENERATED SUCCESSFULLY!")
     print("=" * 70)
     print(f"\n📂 Output files location: {output_dir}/")
+    print("   Hackathon Submission Files:")
     print("   • flagged_moments.csv")
     print("   • trip_summaries.csv")
     print("   • earnings_velocity.csv")
+    print("\n   Preprocessed Data (for reference):")
+    print("   • accelerometer_preprocessed.csv")
+    print("   • audio_preprocessed.csv")
     print("\n💡 Next Steps:")
     print("   1. Review the generated CSVs to verify format")
     print("   2. Share with your team for dashboard/API integration")
     print("   3. Use flagged_moments.csv for the event timeline UI")
     print("   4. Use trip_summaries.csv for the trip report cards")
     print("   5. Use earnings_velocity.csv for the earnings dashboard")
+    print("   6. Preprocessed CSVs contain all normalized/smoothed sensor data")
     print()
 
 

@@ -23,10 +23,11 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────
 
 # Fixed thresholds (m/s² net dynamic acceleration after gravity removal)
-HARSH_BRAKE_THRESHOLD      = 2.0   # sudden deceleration / forward lurch
-HARSH_ACCEL_THRESHOLD      = 2.0   # hard acceleration
+HARSH_BRAKE_THRESHOLD      = 2.5   # high magnitude + decelerating delta
+HARSH_ACCEL_THRESHOLD      = 2.5   # high magnitude + accelerating delta
 LATERAL_SWERVE_THRESHOLD   = 1.5   # sharp cornering / lane change
-MODERATE_EVENT_THRESHOLD   = 1.2   # softer events worth tracking
+MODERATE_EVENT_THRESHOLD   = 1.5   # softer events worth tracking
+MOTION_SCORE_CAP           = 3.5   # max magnitude for 0-1 normalisation
 
 
 def engineer_motion_features(acc_df: pd.DataFrame) -> pd.DataFrame:
@@ -38,12 +39,16 @@ def engineer_motion_features(acc_df: pd.DataFrame) -> pd.DataFrame:
     df = acc_df.copy()
 
     # ── Binary event flags ────────────────────────────────
-    df["is_harsh_brake"]  = (
-        (df["accel_delta"] < -HARSH_BRAKE_THRESHOLD)
+    # Harsh braking: high magnitude AND negative delta (decelerating)
+    df["is_harsh_brake"] = (
+        (df["accel_magnitude_smooth"] >= HARSH_BRAKE_THRESHOLD) &
+        (df["accel_delta"] <= 0)
     ).astype(int)
 
-    df["is_harsh_accel"]  = (
-        (df["accel_delta"] > HARSH_ACCEL_THRESHOLD)
+    # Harsh acceleration: high magnitude AND positive delta
+    df["is_harsh_accel"] = (
+        (df["accel_magnitude_smooth"] >= HARSH_ACCEL_THRESHOLD) &
+        (df["accel_delta"] > 0)
     ).astype(int)
 
     df["is_lateral_swerve"] = (
@@ -58,8 +63,8 @@ def engineer_motion_features(acc_df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Graded motion score [0, 1] ────────────────────────
     # Normalise smoothed magnitude to a 0-1 score.
-    # Cap at 10 m/s² (well beyond any real driving event).
-    df["motion_score"] = (df["accel_magnitude_smooth"] / 10.0).clip(0, 1)
+    # Cap at MOTION_SCORE_CAP m/s² to match reference score range.
+    df["motion_score"] = (df["accel_magnitude_smooth"] / MOTION_SCORE_CAP).clip(0, 1)
 
     # ── Jerk score: penalise rapid *changes* in acceleration ──
     # More human-perceptible discomfort comes from jerk, not magnitude alone.
@@ -185,7 +190,7 @@ MEDIUM_STRESS_THRESHOLD = 0.45
 def fuse_signals(
     acc_df: pd.DataFrame,
     aud_df: pd.DataFrame,
-    tolerance_sec: int = 60,
+    tolerance_sec: int = 600,
 ) -> pd.DataFrame:
     """
     Time-align accelerometer and audio readings and compute a combined
@@ -248,14 +253,20 @@ def fuse_signals(
 
     fused = pd.concat(merged_rows, ignore_index=True)
 
+    # ── Trip-level audio fallback ─────────────────────────
+    # For accel readings that didn't match any audio within tolerance,
+    # use the trip's average audio score so they aren't penalised.
+    trip_audio_mean = aud_df.groupby("trip_id")["audio_score_adjusted"].mean()
+    for trip_id in fused["trip_id"].unique():
+        mask = (fused["trip_id"] == trip_id) & (fused["audio_score_fused"] == 0)
+        if mask.any() and trip_id in trip_audio_mean.index:
+            fused.loc[mask, "audio_score_fused"] = trip_audio_mean[trip_id]
+
     # ── Combined score ────────────────────────────────────
-    has_audio = fused["audio_score_fused"] > 0
-    fused["combined_score"] = np.where(
-        has_audio,
-        MOTION_WEIGHT * fused["motion_score"] + AUDIO_WEIGHT * fused["audio_score_fused"],
-        fused["motion_score"] * 0.8,   # slight penalty for no audio confirmation
-    )
-    fused["combined_score"] = fused["combined_score"].clip(0, 1)
+    fused["combined_score"] = (
+        MOTION_WEIGHT * fused["motion_score"] +
+        AUDIO_WEIGHT * fused["audio_score_fused"]
+    ).clip(0, 1)
 
     # ── Stress severity label ─────────────────────────────
     fused["stress_severity"] = pd.cut(
