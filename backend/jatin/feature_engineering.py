@@ -136,7 +136,7 @@ def engineer_audio_features(aud_df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Graded audio score [0, 1] ─────────────────────────
     # dB is logarithmic; map 30–120 dB linearly then blend with severity.
-    db_score = ((df["audio_level_db"] - 30) / 90).clip(0, 1)
+    db_score = ((df["audio_level_db"] - 30) / 75).clip(0, 1)
     sev_score = (df["audio_severity_score"] / 5).clip(0, 1)
     df["audio_score"] = (0.6 * db_score + 0.4 * sev_score).clip(0, 1)
 
@@ -147,7 +147,7 @@ def engineer_audio_features(aud_df: pd.DataFrame) -> pd.DataFrame:
         df["sustained_duration_sec"].clip(0, 300) / 300
     )
     df["audio_score_adjusted"] = (
-        df["audio_score"] * (1 + 0.3 * df["sustained_penalty"])
+        df["audio_score"] * (1 + 0.4 * df["sustained_penalty"])
     ).clip(0, 1)
 
     # ── Trip-level context ────────────────────────────────

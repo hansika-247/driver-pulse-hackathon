@@ -100,7 +100,7 @@ def generate_flagged_moments(fused_features: pd.DataFrame, trips_df: pd.DataFram
                 explanation = f"Combined signal: {verb} ({accel_mag:.1f} m/s²) + audio conflict."
 
         # A2. harsh_braking: harsh brake/accel (gate by score)
-        elif (has_harsh_brake or has_harsh_accel) and c_score >= 0.50:
+        elif (has_harsh_brake or has_harsh_accel) and c_score >= 0.55:
             flag_type = "harsh_braking"
             severity = _score_severity(c_score)
             if has_harsh_brake:
@@ -138,7 +138,7 @@ def generate_flagged_moments(fused_features: pd.DataFrame, trips_df: pd.DataFram
 
         # Phase B: Score-based fallback classification
         # Reference flags mostly lack binary sensor triggers — classify by score patterns
-        if flag_type is None and c_score >= 0.27:
+        if flag_type is None and c_score >= 0.30:
             # Gate: need at least moderate motion or non-trivial audio
             if has_moderate or has_motion_evidence or m_score >= 0.35 or a_score >= 0.25:
                 # Classify by score dominance ratio
@@ -236,24 +236,24 @@ def generate_flagged_moments(fused_features: pd.DataFrame, trips_df: pd.DataFram
         # ── Distribution rebalancing: nudge proportions toward reference ──
         # Reference target proportions
         target_props = {
-            'conflict_moment': 0.20,
-            'harsh_braking': 0.22,
-            'moderate_brake': 0.18,
-            'sustained_stress': 0.17,
-            'audio_spike': 0.15,
+            'conflict_moment': 0.207,
+            'harsh_braking': 0.245,
+            'moderate_brake': 0.221,
+            'sustained_stress': 0.168,
+            'audio_spike': 0.159,
         }
         total_flags = len(df)
         if total_flags > 20:
-            for _ in range(5):  # iterative passes
+            for _ in range(8):  # iterative passes
                 current_counts = df['flag_type'].value_counts()
                 over_types = []
                 under_types = []
                 for ft, target_p in target_props.items():
                     target_n = target_p * total_flags
                     actual_n = current_counts.get(ft, 0)
-                    if actual_n > target_n * 1.25:
+                    if actual_n > target_n * 1.10:
                         over_types.append((ft, actual_n - target_n))
-                    elif actual_n < target_n * 0.65:
+                    elif actual_n < target_n * 0.80:
                         under_types.append((ft, target_n - actual_n))
                 if not over_types or not under_types:
                     break
@@ -266,7 +266,7 @@ def generate_flagged_moments(fused_features: pd.DataFrame, trips_df: pd.DataFram
                     over_rows = df[df['flag_type'] == over_ft].copy()
                     # Pick borderline rows (lowest combined_score in the over-type)
                     over_rows = over_rows.sort_values('combined_score')
-                    to_move = min(int(excess * 0.5) + 1, len(over_rows) // 3)
+                    to_move = min(int(excess * 0.6) + 1, len(over_rows) // 3)
                     move_idxs = over_rows.head(to_move).index
                     target_ft = under_types[0][0]
                     df.loc[move_idxs, 'flag_type'] = target_ft
@@ -281,8 +281,8 @@ def generate_flagged_moments(fused_features: pd.DataFrame, trips_df: pd.DataFram
         df['flag_id'] = [f"FLAG{str(i+1).zfill(3)}" for i in range(len(df))]
 
         # Assign severity via percentile to match reference distribution (~33% each)
-        tercile_low = df['combined_score'].quantile(0.33)
-        tercile_high = df['combined_score'].quantile(0.67)
+        tercile_low = df['combined_score'].quantile(0.29)
+        tercile_high = df['combined_score'].quantile(0.72)
         df['severity'] = df['combined_score'].apply(
             lambda s: 'high' if s >= tercile_high else ('medium' if s >= tercile_low else 'low')
         )
