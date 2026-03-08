@@ -138,20 +138,20 @@ def generate_flagged_moments(fused_features: pd.DataFrame, trips_df: pd.DataFram
 
         # Phase B: Score-based fallback classification
         # Reference flags mostly lack binary sensor triggers — classify by score patterns
-        if flag_type is None and c_score >= 0.30:
+        if flag_type is None and c_score >= 0.42:
             # Gate: need at least moderate motion or non-trivial audio
-            if has_moderate or has_motion_evidence or m_score >= 0.35 or a_score >= 0.25:
+            if has_moderate or has_motion_evidence or m_score >= 0.42 or a_score >= 0.32:
                 # Classify by score dominance ratio
                 if m_score >= 0.50 and a_score >= 0.50 and c_score >= 0.55:
                     flag_type = "conflict_moment"
                     explanation = f"Event: motion_score={m_score} audio_score={a_score}"
-                elif m_score > a_score * 1.15 and m_score >= 0.40:
+                elif m_score > a_score * 1.15 and m_score >= 0.42:
                     flag_type = "harsh_braking"
                     explanation = f"Event: motion_score={m_score} audio_score={a_score}"
-                elif a_score > m_score * 1.15 and a_score >= 0.35:
+                elif a_score > m_score * 1.15 and a_score >= 0.38:
                     flag_type = "audio_spike"
                     explanation = f"Event: motion_score={m_score} audio_score={a_score}"
-                elif c_score >= 0.40 and abs(m_score - a_score) <= max(m_score, a_score, 0.01) * 0.30:
+                elif c_score >= 0.45 and abs(m_score - a_score) <= max(m_score, a_score, 0.01) * 0.30:
                     flag_type = "sustained_stress"
                     explanation = f"Event: motion_score={m_score} audio_score={a_score}"
                 else:
@@ -188,17 +188,17 @@ def generate_flagged_moments(fused_features: pd.DataFrame, trips_df: pd.DataFram
         kept = []
         for trip_id, group in df.groupby('trip_id'):
             n = len(group)
-            cap = min(3, max(1, n // 2))
+            cap = min(2, max(1, n // 2))
             top = group.head(cap)
-            # Ensure diversity of flag types (add up to 2 different types)
+            # Ensure diversity of flag types (add up to 1 different type)
             remaining_types = set(group['flag_type']) - set(top['flag_type'])
             added = 0
             for _, r in group.iloc[cap:].iterrows():
-                if r['flag_type'] in remaining_types and added < 2:
+                if r['flag_type'] in remaining_types and added < 1:
                     top = pd.concat([top, r.to_frame().T])
                     remaining_types.discard(r['flag_type'])
                     added += 1
-                if not remaining_types or added >= 2:
+                if not remaining_types or added >= 1:
                     break
             kept.append(top)
         df = pd.concat(kept, ignore_index=True)
