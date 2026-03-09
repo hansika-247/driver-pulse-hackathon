@@ -1,16 +1,3 @@
-"""
-feature_engineering.py
------------------------
-Generates all model-ready features for the Driver Pulse system.
-
-Feature groups produced:
-  A. Motion features  – harsh braking / aggressive accel / swerve detection
-  B. Audio features   – noise spikes, sustained high audio, argument signals
-  C. Fusion features  – combined motion+audio stress scores
-  D. Temporal features– time-of-day, trip progress fraction, elapsed windows
-  E. Earnings features– velocity, goal gap, pacing score, trajectory label
-"""
-
 import pandas as pd
 import numpy as np
 import logging
@@ -18,34 +5,20 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────────────────
-# A.  Motion Feature Engineering
-# ──────────────────────────────────────────────────────────
-
-# Fixed thresholds (m/s² net dynamic acceleration after gravity removal)
-HARSH_BRAKE_THRESHOLD      = 2.5   # high magnitude + decelerating delta
-HARSH_ACCEL_THRESHOLD      = 2.5   # high magnitude + accelerating delta
-LATERAL_SWERVE_THRESHOLD   = 1.5   # sharp cornering / lane change
-MODERATE_EVENT_THRESHOLD   = 1.5   # softer events worth tracking
-MOTION_SCORE_CAP           = 3.5   # max magnitude for 0-1 normalisation
-
+HARSH_BRAKE_THRESHOLD      = 2.5
+HARSH_ACCEL_THRESHOLD      = 2.5
+LATERAL_SWERVE_THRESHOLD   = 1.5
+MODERATE_EVENT_THRESHOLD   = 1.5
+MOTION_SCORE_CAP           = 3.5
 
 def engineer_motion_features(acc_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Adds binary and graded motion event features.
-
-    Assumes acc_df has been through signal_preprocessing.preprocess_accelerometer().
-    """
     df = acc_df.copy()
 
-    # ── Binary event flags ────────────────────────────────
-    # Harsh braking: high magnitude AND negative delta (decelerating)
     df["is_harsh_brake"] = (
         (df["accel_magnitude_smooth"] >= HARSH_BRAKE_THRESHOLD) &
         (df["accel_delta"] <= 0)
     ).astype(int)
 
-    # Harsh acceleration: high magnitude AND positive delta
     df["is_harsh_accel"] = (
         (df["accel_magnitude_smooth"] >= HARSH_ACCEL_THRESHOLD) &
         (df["accel_delta"] > 0)
@@ -61,18 +34,11 @@ def engineer_motion_features(acc_df: pd.DataFrame) -> pd.DataFrame:
         (df["is_harsh_accel"] == 0)
     ).astype(int)
 
-    # ── Graded motion score [0, 1] ────────────────────────
-    # Normalise smoothed magnitude to a 0-1 score.
-    # Cap at MOTION_SCORE_CAP m/s² to match reference score range.
     df["motion_score"] = (df["accel_magnitude_smooth"] / MOTION_SCORE_CAP).clip(0, 1)
 
-    # ── Jerk score: penalise rapid *changes* in acceleration ──
-    # More human-perceptible discomfort comes from jerk, not magnitude alone.
     max_delta = df["accel_delta"].abs().max() or 1.0
     df["jerk_score"] = (df["accel_delta"].abs() / max_delta).clip(0, 1)
 
-    # ── Speed context ─────────────────────────────────────
-    # Low-speed harsh events are more likely passenger incidents than traffic.
     df["is_low_speed"] = (df["speed_kmh"] < 20).astype(int)
     df["is_stationary"] = (df["speed_kmh"] == 0).astype(int)
 
@@ -90,9 +56,7 @@ def engineer_motion_features(acc_df: pd.DataFrame) -> pd.DataFrame:
     )
     return df
 
-
 def classify_motion_event(row: pd.Series) -> str:
-    """Return a human-readable motion event label for a single row."""
     if row["is_harsh_brake"]:
         return "harsh_brake"
     if row["is_harsh_accel"]:
@@ -103,25 +67,13 @@ def classify_motion_event(row: pd.Series) -> str:
         return "moderate_event"
     return "normal"
 
-
-# ──────────────────────────────────────────────────────────
-# B.  Audio Feature Engineering
-# ──────────────────────────────────────────────────────────
-
-AUDIO_SPIKE_THRESHOLD_DB   = 85.0   # dB — loud enough to indicate conflict
-AUDIO_ARGUMENT_THRESHOLD   = 4      # severity score ≥ 4 = very_loud or argument
-SUSTAINED_NOISE_THRESHOLD  = 60     # seconds of continuous high audio
-
+AUDIO_SPIKE_THRESHOLD_DB   = 85.0
+AUDIO_ARGUMENT_THRESHOLD   = 4
+SUSTAINED_NOISE_THRESHOLD  = 60
 
 def engineer_audio_features(aud_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Adds binary and graded audio event features.
-
-    Assumes aud_df has been through signal_preprocessing.preprocess_audio().
-    """
     df = aud_df.copy()
 
-    # ── Binary flags ──────────────────────────────────────
     df["is_noise_spike"] = (
         df["audio_level_db"] >= AUDIO_SPIKE_THRESHOLD_DB
     ).astype(int)
@@ -134,15 +86,10 @@ def engineer_audio_features(aud_df: pd.DataFrame) -> pd.DataFrame:
         df["sustained_duration_sec"] >= SUSTAINED_NOISE_THRESHOLD
     ).astype(int)
 
-    # ── Graded audio score [0, 1] ─────────────────────────
-    # dB is logarithmic; map 30–120 dB linearly then blend with severity.
     db_score = ((df["audio_level_db"] - 30) / 75).clip(0, 1)
     sev_score = (df["audio_severity_score"] / 5).clip(0, 1)
     df["audio_score"] = (0.6 * db_score + 0.4 * sev_score).clip(0, 1)
 
-    # ── Sustained noise penalty ───────────────────────────
-    # Longer sustained noise should amplify the score.
-    # Cap at 300 s (5 minutes) for normalisation.
     df["sustained_penalty"] = (
         df["sustained_duration_sec"].clip(0, 300) / 300
     )
@@ -150,7 +97,6 @@ def engineer_audio_features(aud_df: pd.DataFrame) -> pd.DataFrame:
         df["audio_score"] * (1 + 0.4 * df["sustained_penalty"])
     ).clip(0, 1)
 
-    # ── Trip-level context ────────────────────────────────
     df["audio_above_baseline"] = (
         df["audio_level_db"] > df["audio_rolling_mean"] + df["audio_rolling_std"]
     ).astype(int)
@@ -162,9 +108,7 @@ def engineer_audio_features(aud_df: pd.DataFrame) -> pd.DataFrame:
     )
     return df
 
-
 def classify_audio_event(row: pd.Series) -> str:
-    """Return a human-readable audio event label for a single row."""
     if row["is_argument_signal"] and row["is_sustained_noise"]:
         return "sustained_argument"
     if row["is_argument_signal"]:
@@ -175,35 +119,17 @@ def classify_audio_event(row: pd.Series) -> str:
         return "noise_spike"
     return "normal"
 
-
-# ──────────────────────────────────────────────────────────
-# C.  Fusion / Combined Stress Score
-# ──────────────────────────────────────────────────────────
-
-MOTION_WEIGHT = 0.55   # motion slightly more diagnostic for driving safety
+MOTION_WEIGHT = 0.55
 AUDIO_WEIGHT  = 0.45
 
 HIGH_STRESS_THRESHOLD  = 0.70
 MEDIUM_STRESS_THRESHOLD = 0.45
-
 
 def fuse_signals(
     acc_df: pd.DataFrame,
     aud_df: pd.DataFrame,
     tolerance_sec: int = 600,
 ) -> pd.DataFrame:
-    """
-    Time-align accelerometer and audio readings and compute a combined
-    stress score for every accelerometer timestamp.
-
-    Strategy:
-      - For each accelerometer reading, find the nearest audio reading
-        within ±tolerance_sec on the same trip.
-      - Fuse the two scores: combined = w_m * motion + w_a * audio
-      - If no audio match found, use motion score alone (downweighted).
-
-    Returns an enriched accelerometer DataFrame with audio columns attached.
-    """
     acc = acc_df.copy()
     aud = aud_df[["trip_id", "timestamp", "audio_score_adjusted",
                    "is_noise_spike", "is_argument_signal",
@@ -217,7 +143,6 @@ def fuse_signals(
         aud_grp = aud[aud["trip_id"] == trip_id].copy()
 
         if aud_grp.empty:
-            # No audio for this trip – use motion score only (penalised)
             acc_grp = acc_grp.copy()
             acc_grp["audio_score_fused"]     = 0.0
             acc_grp["is_noise_spike"]        = 0
@@ -253,22 +178,17 @@ def fuse_signals(
 
     fused = pd.concat(merged_rows, ignore_index=True)
 
-    # ── Trip-level audio fallback ─────────────────────────
-    # For accel readings that didn't match any audio within tolerance,
-    # use the trip's average audio score so they aren't penalised.
     trip_audio_mean = aud_df.groupby("trip_id")["audio_score_adjusted"].mean()
     for trip_id in fused["trip_id"].unique():
         mask = (fused["trip_id"] == trip_id) & (fused["audio_score_fused"] == 0)
         if mask.any() and trip_id in trip_audio_mean.index:
             fused.loc[mask, "audio_score_fused"] = trip_audio_mean[trip_id]
 
-    # ── Combined score ────────────────────────────────────
     fused["combined_score"] = (
         MOTION_WEIGHT * fused["motion_score"] +
         AUDIO_WEIGHT * fused["audio_score_fused"]
     ).clip(0, 1)
 
-    # ── Stress severity label ─────────────────────────────
     fused["stress_severity"] = pd.cut(
         fused["combined_score"],
         bins=[-np.inf, MEDIUM_STRESS_THRESHOLD, HIGH_STRESS_THRESHOLD, np.inf],
@@ -282,15 +202,7 @@ def fuse_signals(
     )
     return fused
 
-
-# ──────────────────────────────────────────────────────────
-# D.  Temporal Feature Engineering
-# ──────────────────────────────────────────────────────────
-
 def engineer_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add time-aware features that capture when during the day/trip an event occurs.
-    """
     df = df.copy()
     ts = df["timestamp"]
 
@@ -303,34 +215,16 @@ def engineer_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     max_elapsed = df.groupby("trip_id")["elapsed_seconds"].transform("max").replace(0, np.nan)
     df["trip_progress_frac"] = (df["elapsed_seconds"] / max_elapsed).fillna(0)
 
-    # Event proximity to trip start/end (conflicts often cluster at start/end)
     df["near_trip_start"] = (df["trip_progress_frac"] < 0.15).astype(int)
     df["near_trip_end"]   = (df["trip_progress_frac"] > 0.85).astype(int)
 
     return df
 
-
-# ──────────────────────────────────────────────────────────
-# E.  Earnings Feature Engineering
-# ──────────────────────────────────────────────────────────
-
-MIN_HOURS_FOR_VELOCITY = 0.25   # 15-minute cold-start guard
-
+MIN_HOURS_FOR_VELOCITY = 0.25
 
 def engineer_earnings_features(goals_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Enriches the driver_goals DataFrame with:
-      - earnings_velocity_calc : re-derived from raw fields
-      - earnings_gap           : how much more is needed to hit target
-      - pacing_ratio           : actual velocity / required velocity to finish on time
-      - shift_hours_remaining  : hours left in scheduled shift
-      - goal_completion_pct    : how far along toward target
-      - trajectory_label       : categorical forecast (ahead / on_track / at_risk / critical)
-    """
     df = goals_df.copy()
 
-    # ── Re-derive velocity robustly ───────────────────────
-    # Use provided field but fall back to computation if missing / zero.
     if "earnings_velocity" in df.columns:
         mask_zero = df["earnings_velocity"].isna() | (df["earnings_velocity"] == 0)
         df.loc[mask_zero, "earnings_velocity"] = (
@@ -338,21 +232,16 @@ def engineer_earnings_features(goals_df: pd.DataFrame) -> pd.DataFrame:
             df.loc[mask_zero, "current_hours"].clip(lower=MIN_HOURS_FOR_VELOCITY)
         )
 
-    # ── Goal gap ──────────────────────────────────────────
     df["earnings_gap"] = (df["target_earnings"] - df["current_earnings"]).clip(lower=0)
 
-    # ── Goal completion % ─────────────────────────────────
     df["goal_completion_pct"] = (
         df["current_earnings"] / df["target_earnings"].replace(0, np.nan)
     ).clip(0, 1.0)
 
-    # ── Required velocity to finish on time ───────────────
-    # Parse shift times if available
     for col in ["shift_start_time", "shift_end_time"]:
         if col not in df.columns:
             df[col] = np.nan
 
-    # Approximate remaining shift hours from target_hours and current_hours
     df["hours_elapsed"] = df["current_hours"].clip(lower=0)
     df["hours_remaining"] = (
         df["target_hours"] - df["hours_elapsed"]
@@ -363,11 +252,8 @@ def engineer_earnings_features(goals_df: pd.DataFrame) -> pd.DataFrame:
         df["earnings_gap"] / df["hours_remaining"],
         np.inf,
     )
-    # Clip infinite (shift over but goal not met) to a large number for sorting
     df["required_velocity"] = df["required_velocity"].replace(np.inf, 9999)
 
-    # ── Pacing ratio ──────────────────────────────────────
-    # > 1.0 → ahead of pace; < 1.0 → falling behind
     df["pacing_ratio"] = np.where(
         df["required_velocity"] > 0,
         df["earnings_velocity"] / df["required_velocity"].replace(0, np.nan),
@@ -375,10 +261,8 @@ def engineer_earnings_features(goals_df: pd.DataFrame) -> pd.DataFrame:
     )
     df["pacing_ratio"] = df["pacing_ratio"].clip(0, 5)
 
-    # ── Cold-start flag ───────────────────────────────────
     df["is_cold_start"] = (df["current_hours"] < MIN_HOURS_FOR_VELOCITY).astype(int)
 
-    # ── Trajectory label ──────────────────────────────────
     def _label(row):
         if row["goal_completion_pct"] >= 1.0:
             return "achieved"
@@ -397,7 +281,6 @@ def engineer_earnings_features(goals_df: pd.DataFrame) -> pd.DataFrame:
 
     df["trajectory_label"] = df.apply(_label, axis=1)
 
-    # ── Earnings forecast at end of shift ─────────────────
     df["projected_earnings"] = (
         df["current_earnings"] +
         df["earnings_velocity"] * df["hours_remaining"]
@@ -414,21 +297,11 @@ def engineer_earnings_features(goals_df: pd.DataFrame) -> pd.DataFrame:
     )
     return df
 
-
-# ──────────────────────────────────────────────────────────
-# F.  Trip-level Summary Feature Matrix
-# ──────────────────────────────────────────────────────────
-
 def build_trip_feature_matrix(
     fused_df: pd.DataFrame,
     aud_df: pd.DataFrame,
     trips_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """
-    Aggregate all per-reading features up to the trip level.
-    Returns one row per trip with rich summary statistics.
-    """
-    # ── Motion aggregates ─────────────────────────────────
     motion_agg = fused_df.groupby("trip_id").agg(
         n_accel_readings      = ("accel_magnitude_smooth", "count"),
         mean_accel            = ("accel_magnitude_smooth", "mean"),
@@ -443,7 +316,6 @@ def build_trip_feature_matrix(
         n_low_speed_events    = ("is_low_speed", "sum"),
     ).reset_index()
 
-    # ── Audio aggregates ──────────────────────────────────
     audio_agg = aud_df.groupby("trip_id").agg(
         n_audio_readings    = ("audio_level_db", "count"),
         mean_audio_db       = ("audio_level_db", "mean"),
@@ -456,7 +328,6 @@ def build_trip_feature_matrix(
         total_sustained_sec = ("sustained_duration_sec", "sum"),
     ).reset_index()
 
-    # ── Combined stress aggregates ────────────────────────
     stress_agg = fused_df.groupby("trip_id").agg(
         combined_score_mean = ("combined_score", "mean"),
         combined_score_max  = ("combined_score", "max"),
@@ -465,7 +336,6 @@ def build_trip_feature_matrix(
         n_conflict_moments  = ("is_argument_signal", "sum"),
     ).reset_index()
 
-    # ── Merge everything ──────────────────────────────────
     trip_features = (
         motion_agg
         .merge(audio_agg,  on="trip_id", how="outer")
@@ -475,7 +345,6 @@ def build_trip_feature_matrix(
     if trips_df is not None and not trips_df.empty:
         trip_features = trip_features.merge(trips_df, on="trip_id", how="left")
 
-    # ── Derived trip-level ratios ─────────────────────────
     trip_features["harsh_event_rate"] = (
         (trip_features["n_harsh_brakes"] + trip_features["n_harsh_accels"]) /
         trip_features["n_accel_readings"].replace(0, np.nan)
@@ -496,28 +365,7 @@ def build_trip_feature_matrix(
     logger.info(f"[trip features] {len(trip_features)} trips in feature matrix.")
     return trip_features.fillna(0)
 
-
-# ──────────────────────────────────────────────────────────
-# Convenience runner
-# ──────────────────────────────────────────────────────────
-
 def build_all_features(datasets: dict) -> dict:
-    """
-    Run the complete feature engineering pipeline.
-
-    Parameters
-    ----------
-    datasets : dict returned by data_ingestion.load_all()
-
-    Returns
-    -------
-    dict with keys:
-      acc_features     – per-reading accelerometer features
-      aud_features     – per-reading audio features
-      fused_features   – aligned & fused per-reading features
-      trip_features    – trip-level feature matrix
-      earnings_features– driver goal & earnings features
-    """
     from signal_preprocessing import preprocess_accelerometer, preprocess_audio
 
     acc = preprocess_accelerometer(datasets["accelerometer"])
@@ -541,7 +389,6 @@ def build_all_features(datasets: dict) -> dict:
         "trip_features":     trip_feat,
         "earnings_features": earnings_feat,
     }
-
 
 if __name__ == "__main__":
     import sys
