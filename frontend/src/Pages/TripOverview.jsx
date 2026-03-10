@@ -297,6 +297,53 @@ return (
 
 </div>
 
+      {/* WELCOME SECTION — shows before driver enters ID */}
+      {!driverId && driverTrips.length === 0 && (
+        <div className="welcome-section">
+
+          <div className="welcome-hero">
+            <div className="welcome-icon">🚗</div>
+            <h2 className="welcome-title">Welcome to Driver Pulse</h2>
+            <p className="welcome-subtitle">
+              Your personal driving safety & earnings companion. Enter your Driver ID above to view your trip analytics, safety insights, and earnings performance.
+            </p>
+          </div>
+
+          <div className="feature-cards">
+
+            <div className="feature-card">
+              <div className="feature-emoji">📊</div>
+              <h3>Trip Analytics</h3>
+              <p>Track your trips, earnings pace, and performance against daily targets in real time.</p>
+            </div>
+
+            <div className="feature-card">
+              <div className="feature-emoji">🛡️</div>
+              <h3>Safety Insights</h3>
+              <p>See flagged driving events with severity levels, and get tips to improve your safety score.</p>
+            </div>
+
+            <div className="feature-card">
+              <div className="feature-emoji">🤖</div>
+              <h3>AI-Powered Tips</h3>
+              <p>Get personalized AI recommendations based on your driving patterns and earnings data.</p>
+            </div>
+
+            <div className="feature-card">
+              <div className="feature-emoji">📍</div>
+              <h3>Location Tracking</h3>
+              <p>View exactly where safety events occurred on a map, with GPS-linked trip route details.</p>
+            </div>
+
+          </div>
+
+          <div className="welcome-cta">
+            <p>👆 Enter a Driver ID above to get started </p>
+          </div>
+
+        </div>
+      )}
+
       {driverTrips.length > 0 && (
 
         <>
@@ -389,7 +436,7 @@ Last Updated: {lastUpdated}
               <h3>Trip Velocity Progress</h3>
 
               <p className="chart-subtitle">
-                Current velocity vs target velocity over time
+                This chart tracks your earnings pace (blue line) compared to your target pace (green line) over time. If the blue line stays above the green line, you're on track to hit your earnings goal!
               </p>
 
               <DynamicVelocityChart trips={driverRealtime} />
@@ -400,6 +447,7 @@ Last Updated: {lastUpdated}
             <div className="velocity-table-box">
 
               <h3>Driver Velocity Timeline</h3>
+              <p style={{fontSize:"13px",color:"#9ca3af",marginBottom:"10px"}}>This table shows your earnings pace at each time checkpoint. Green status = ahead of target, yellow = on track, red = falling behind. "Trips Needed" tells you how many more trips to reach your goal.</p>
 
               <table className="velocity-table">
 

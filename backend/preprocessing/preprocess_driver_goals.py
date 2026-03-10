@@ -20,7 +20,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
 import pandas as pd
-from jatin.data_ingestion import load_all
+from analytics_engine.data_ingestion import load_all
 
 # ---------------------------------------------------
 # MAIN PREPROCESSING FUNCTION
@@ -206,7 +206,7 @@ if __name__ == "__main__":
 
     BASE_DIR = Path(__file__).resolve().parent.parent
 
-    from jatin.data_ingestion import load_all
+    from analytics_engine.data_ingestion import load_all
 
     datasets = load_all(BASE_DIR / "driver_pulse_hackathon_data")
 

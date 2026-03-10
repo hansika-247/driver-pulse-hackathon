@@ -280,6 +280,7 @@ const FLAG_TYPE_COLORS = {
         <div>
 
           <h3>Severity Distribution</h3>
+          <p style={{fontSize:"13px",color:"#9ca3af",marginBottom:"10px"}}>This chart shows how many of your alerts were minor (green), moderate (yellow), or serious (red). Mostly green is great — it means most events were small.</p>
 
           <ResponsiveContainer width="100%" height={300}>
 
@@ -316,6 +317,7 @@ const FLAG_TYPE_COLORS = {
         <div>
 
           <h3>Flag Type Distribution</h3>
+          <p style={{fontSize:"13px",color:"#9ca3af",marginBottom:"10px"}}>This shows what kind of events were detected — like hard braking, cabin noise, or stress moments. Taller bars mean that type happened more often.</p>
 
           <ResponsiveContainer width="100%" height={300}>
 
@@ -370,6 +372,7 @@ const FLAG_TYPE_COLORS = {
         <div>
 
           <h3>Driver Risk Profile</h3>
+          <p style={{fontSize:"13px",color:"#9ca3af",marginBottom:"10px"}}>This radar chart shows your overall driving pattern. A smaller shape means safer driving. Each point measures: Motion (braking/swerving), Audio (cabin noise), Combined (overall), Risk (your risk score), and High % (how many events were serious).</p>
 
           <ResponsiveContainer width="100%" height={320}>
 
@@ -410,6 +413,7 @@ const FLAG_TYPE_COLORS = {
         <div>
 
           <h3>Score Timeline</h3>
+          <p style={{fontSize:"13px",color:"#9ca3af",marginBottom:"10px"}}>This shows how your driving scores changed over each flagged event. Orange = motion score (braking/acceleration), Purple = audio score (cabin noise), Blue = combined overall score. Lower lines mean smoother driving.</p>
 
           <ResponsiveContainer width="100%" height={300}>
 

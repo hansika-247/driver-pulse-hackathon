@@ -297,7 +297,7 @@ def save_cleaned_trips(df: pd.DataFrame, output_path: Path):
 
 if __name__ == "__main__":
 
-    from jatin.data_ingestion import load_all
+    from analytics_engine.data_ingestion import load_all
 
     BASE_DIR = Path(__file__).resolve().parent.parent
 
