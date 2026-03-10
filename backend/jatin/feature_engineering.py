@@ -15,23 +15,23 @@ def engineer_motion_features(acc_df: pd.DataFrame) -> pd.DataFrame:
     df = acc_df.copy()
 
     df["is_harsh_brake"] = (
-        (df["accel_magnitude_smooth"] >= HARSH_BRAKE_THRESHOLD) &
-        (df["accel_delta"] <= 0)
+        (df["accel_magnitude_smooth"] >= HARSH_BRAKE_THRESHOLD)
+        & (df["accel_delta"] <= 0)
     ).astype(int)
 
     df["is_harsh_accel"] = (
-        (df["accel_magnitude_smooth"] >= HARSH_ACCEL_THRESHOLD) &
-        (df["accel_delta"] > 0)
+        (df["accel_magnitude_smooth"] >= HARSH_ACCEL_THRESHOLD)
+        & (df["accel_delta"] > 0)
     ).astype(int)
 
-    df["is_lateral_swerve"] = (
-        df["accel_lateral"] > LATERAL_SWERVE_THRESHOLD
-    ).astype(int)
+    df["is_lateral_swerve"] = (df["accel_lateral"] > LATERAL_SWERVE_THRESHOLD).astype(
+        int
+    )
 
     df["is_moderate_event"] = (
-        (df["accel_magnitude_smooth"] > MODERATE_EVENT_THRESHOLD) &
-        (df["is_harsh_brake"] == 0) &
-        (df["is_harsh_accel"] == 0)
+        (df["accel_magnitude_smooth"] > MODERATE_EVENT_THRESHOLD)
+        & (df["is_harsh_brake"] == 0)
+        & (df["is_harsh_accel"] == 0)
     ).astype(int)
 
     df["motion_score"] = (df["accel_magnitude_smooth"] / MOTION_SCORE_CAP).clip(0, 1)
@@ -43,17 +43,17 @@ def engineer_motion_features(acc_df: pd.DataFrame) -> pd.DataFrame:
     df["is_stationary"] = (df["speed_kmh"] == 0).astype(int)
 
     df = df.sort_values(["trip_id", "timestamp"]).reset_index(drop=True)
+
     df["harsh_event_rolling5"] = (
         df.groupby("trip_id")
-        .apply(lambda g: (g["is_harsh_brake"] | g["is_harsh_accel"]).rolling(5, min_periods=1).sum())
+        .apply(
+            lambda g: (
+                g["is_harsh_brake"] | g["is_harsh_accel"]
+            ).rolling(5, min_periods=1).sum()
+        )
         .reset_index(level=0, drop=True)
     ).fillna(0)
 
-    logger.info(
-        f"[motion features] harsh_brake={df['is_harsh_brake'].sum()} | "
-        f"harsh_accel={df['is_harsh_accel'].sum()} | "
-        f"swerve={df['is_lateral_swerve'].sum()}"
-    )
     return df
 
 def classify_motion_event(row: pd.Series) -> str:
@@ -88,6 +88,7 @@ def engineer_audio_features(aud_df: pd.DataFrame) -> pd.DataFrame:
 
     db_score = ((df["audio_level_db"] - 30) / 75).clip(0, 1)
     sev_score = (df["audio_severity_score"] / 5).clip(0, 1)
+
     df["audio_score"] = (0.6 * db_score + 0.4 * sev_score).clip(0, 1)
 
     df["sustained_penalty"] = (
@@ -131,16 +132,12 @@ def fuse_signals(
     tolerance_sec: int = 600,
 ) -> pd.DataFrame:
     acc = acc_df.copy()
-    aud = aud_df[["trip_id", "timestamp", "audio_score_adjusted",
-                   "is_noise_spike", "is_argument_signal",
-                   "is_sustained_noise", "audio_level_db",
-                   "audio_severity_score"]].copy()
-    aud = aud.rename(columns={"timestamp": "audio_ts"})
+    aud = aud_df.copy()
 
-    merged_rows = []
+    acc["timestamp"] = pd.to_datetime(acc["timestamp"], errors="coerce")
+    aud["timestamp"] = pd.to_datetime(aud["timestamp"], errors="coerce")
 
-    for trip_id, acc_grp in acc.groupby("trip_id"):
-        aud_grp = aud[aud["trip_id"] == trip_id].copy()
+    fused = acc.merge(aud, on=["trip_id", "timestamp"], how="left")
 
         if aud_grp.empty:
             acc_grp = acc_grp.copy()
@@ -152,7 +149,7 @@ def fuse_signals(
             merged_rows.append(acc_grp)
             continue
 
-        aud_ts = aud_grp["audio_ts"].values.astype("datetime64[s]").astype(np.int64)
+    fused["audio_score_adjusted"] = fused["audio_score_adjusted"].fillna(0)
 
         for _, acc_row in acc_grp.iterrows():
             acc_ts_ns = np.int64(acc_row["timestamp"].value // 1_000_000_000)
@@ -185,8 +182,8 @@ def fuse_signals(
             fused.loc[mask, "audio_score_fused"] = trip_audio_mean[trip_id]
 
     fused["combined_score"] = (
-        MOTION_WEIGHT * fused["motion_score"] +
-        AUDIO_WEIGHT * fused["audio_score_fused"]
+        MOTION_WEIGHT * fused["motion_score"]
+        + AUDIO_WEIGHT * fused["audio_score_adjusted"]
     ).clip(0, 1)
 
     fused["stress_severity"] = pd.cut(
@@ -195,28 +192,33 @@ def fuse_signals(
         labels=["low", "medium", "high"],
     )
 
-    logger.info(
-        f"[fusion] Rows: {len(fused)} | "
-        f"high stress: {(fused['stress_severity'] == 'high').sum()} | "
-        f"medium: {(fused['stress_severity'] == 'medium').sum()}"
-    )
     return fused
 
 def engineer_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
     ts = df["timestamp"]
 
-    df["hour_of_day"]    = ts.dt.hour
-    df["minute_of_day"]  = ts.dt.hour * 60 + ts.dt.minute
-    df["is_rush_hour"]   = ts.dt.hour.isin([7, 8, 9, 17, 18, 19]).astype(int)
-    df["is_night"]       = ts.dt.hour.isin(list(range(22, 24)) + list(range(0, 6))).astype(int)
+    df["hour_of_day"] = ts.dt.hour
+    df["minute_of_day"] = ts.dt.hour * 60 + ts.dt.minute
+
+    df["is_rush_hour"] = ts.dt.hour.isin([7, 8, 9, 17, 18, 19]).astype(int)
+    df["is_night"] = ts.dt.hour.isin(list(range(22, 24)) + list(range(0, 6))).astype(
+        int
+    )
 
     df = df.sort_values(["trip_id", "timestamp"]).reset_index(drop=True)
-    max_elapsed = df.groupby("trip_id")["elapsed_seconds"].transform("max").replace(0, np.nan)
+
+    max_elapsed = df.groupby("trip_id")["elapsed_seconds"].transform("max").replace(
+        0, np.nan
+    )
+
     df["trip_progress_frac"] = (df["elapsed_seconds"] / max_elapsed).fillna(0)
 
     df["near_trip_start"] = (df["trip_progress_frac"] < 0.15).astype(int)
-    df["near_trip_end"]   = (df["trip_progress_frac"] > 0.85).astype(int)
+    df["near_trip_end"] = (df["trip_progress_frac"] > 0.85).astype(int)
 
     return df
 
@@ -303,66 +305,63 @@ def build_trip_feature_matrix(
     trips_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     motion_agg = fused_df.groupby("trip_id").agg(
-        n_accel_readings      = ("accel_magnitude_smooth", "count"),
-        mean_accel            = ("accel_magnitude_smooth", "mean"),
-        max_accel             = ("accel_magnitude_smooth", "max"),
-        n_harsh_brakes        = ("is_harsh_brake", "sum"),
-        n_harsh_accels        = ("is_harsh_accel", "sum"),
-        n_swerves             = ("is_lateral_swerve", "sum"),
-        motion_score_mean     = ("motion_score", "mean"),
-        motion_score_max      = ("motion_score", "max"),
-        mean_speed_kmh        = ("speed_kmh", "mean"),
-        max_speed_kmh         = ("speed_kmh", "max"),
-        n_low_speed_events    = ("is_low_speed", "sum"),
+        n_accel_readings=("accel_magnitude_smooth", "count"),
+        mean_accel=("accel_magnitude_smooth", "mean"),
+        max_accel=("accel_magnitude_smooth", "max"),
+        n_harsh_brakes=("is_harsh_brake", "sum"),
+        n_harsh_accels=("is_harsh_accel", "sum"),
+        n_swerves=("is_lateral_swerve", "sum"),
+        motion_score_mean=("motion_score", "mean"),
+        motion_score_max=("motion_score", "max"),
+        mean_speed_kmh=("speed_kmh", "mean"),
+        max_speed_kmh=("speed_kmh", "max"),
+        n_low_speed_events=("is_low_speed", "sum"),
     ).reset_index()
 
     audio_agg = aud_df.groupby("trip_id").agg(
-        n_audio_readings    = ("audio_level_db", "count"),
-        mean_audio_db       = ("audio_level_db", "mean"),
-        max_audio_db        = ("audio_level_db", "max"),
-        n_noise_spikes      = ("is_noise_spike", "sum"),
-        n_argument_signals  = ("is_argument_signal", "sum"),
-        n_sustained_noise   = ("is_sustained_noise", "sum"),
-        audio_score_mean    = ("audio_score_adjusted", "mean"),
-        audio_score_max     = ("audio_score_adjusted", "max"),
-        total_sustained_sec = ("sustained_duration_sec", "sum"),
+        n_audio_readings=("audio_level_db", "count"),
+        mean_audio_db=("audio_level_db", "mean"),
+        max_audio_db=("audio_level_db", "max"),
+        n_noise_spikes=("is_noise_spike", "sum"),
+        n_argument_signals=("is_argument_signal", "sum"),
+        n_sustained_noise=("is_sustained_noise", "sum"),
+        audio_score_mean=("audio_score_adjusted", "mean"),
+        audio_score_max=("audio_score_adjusted", "max"),
+        total_sustained_sec=("sustained_duration_sec", "sum"),
     ).reset_index()
 
     stress_agg = fused_df.groupby("trip_id").agg(
-        combined_score_mean = ("combined_score", "mean"),
-        combined_score_max  = ("combined_score", "max"),
-        n_high_stress       = ("stress_severity", lambda x: (x == "high").sum()),
-        n_medium_stress     = ("stress_severity", lambda x: (x == "medium").sum()),
-        n_conflict_moments  = ("is_argument_signal", "sum"),
+        combined_score_mean=("combined_score", "mean"),
+        combined_score_max=("combined_score", "max"),
+        n_high_stress=("stress_severity", lambda x: (x == "high").sum()),
+        n_medium_stress=("stress_severity", lambda x: (x == "medium").sum()),
     ).reset_index()
 
     trip_features = (
-        motion_agg
-        .merge(audio_agg,  on="trip_id", how="outer")
+        motion_agg.merge(audio_agg, on="trip_id", how="outer")
         .merge(stress_agg, on="trip_id", how="outer")
     )
 
-    if trips_df is not None and not trips_df.empty:
+    if trips_df is not None:
         trip_features = trip_features.merge(trips_df, on="trip_id", how="left")
 
     trip_features["harsh_event_rate"] = (
-        (trip_features["n_harsh_brakes"] + trip_features["n_harsh_accels"]) /
-        trip_features["n_accel_readings"].replace(0, np.nan)
+        (trip_features["n_harsh_brakes"] + trip_features["n_harsh_accels"])
+        / trip_features["n_accel_readings"].replace(0, np.nan)
     ).fillna(0)
 
     trip_features["conflict_signal_rate"] = (
-        (trip_features["n_noise_spikes"] + trip_features["n_argument_signals"]) /
-        trip_features["n_audio_readings"].replace(0, np.nan)
+        (trip_features["n_noise_spikes"] + trip_features["n_argument_signals"])
+        / trip_features["n_audio_readings"].replace(0, np.nan)
     ).fillna(0)
 
     trip_features["trip_quality_score"] = (
-        1.0
-        - 0.35 * trip_features["harsh_event_rate"].clip(0, 1)
-        - 0.35 * trip_features["conflict_signal_rate"].clip(0, 1)
-        - 0.30 * trip_features["combined_score_mean"].clip(0, 1)
+        1
+        - 0.35 * trip_features["harsh_event_rate"]
+        - 0.35 * trip_features["conflict_signal_rate"]
+        - 0.30 * trip_features["combined_score_mean"]
     ).clip(0, 1)
 
-    logger.info(f"[trip features] {len(trip_features)} trips in feature matrix.")
     return trip_features.fillna(0)
 
 def build_all_features(datasets: dict) -> dict:
@@ -378,9 +377,11 @@ def build_all_features(datasets: dict) -> dict:
 
     fused = fuse_signals(acc, aud)
 
-    trip_feat = build_trip_feature_matrix(fused, aud, datasets.get("trips"))
-
-    earnings_feat = engineer_earnings_features(datasets["driver_goals"])
+    trip_feat = build_trip_feature_matrix(
+        fused,
+        aud,
+        datasets.get("trips"),
+    )
 
     return {
         "acc_features":      acc,
