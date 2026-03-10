@@ -10,12 +10,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output_data")
 
 # CSV file paths — all consolidated in backend/output_data/
+PROCESSED_DIR = os.path.join(BASE_DIR, "processed_outputs")
+
 CSV_FILES = {
     "flagged_moments_latest": os.path.join(OUTPUT_DIR, "flagged_moments_latest.csv"),
     "flagged_moments": os.path.join(OUTPUT_DIR, "flagged_moments.csv"),
     "accelerometer_data": os.path.join(OUTPUT_DIR, "accelerometer_data.csv"),
     "trips": os.path.join(OUTPUT_DIR, "trips.csv"),
     "realtime_driver_predictions": os.path.join(OUTPUT_DIR, "realtime_driver_predictions.csv"),
+    "trip_summaries": os.path.join(PROCESSED_DIR, "trip_summaries.csv"),
 }
 
 
@@ -80,6 +83,18 @@ def get_trips():
 def get_driver_predictions():
     """Return realtime driver predictions. Optional ?driver_id= filter."""
     rows = read_csv_file(CSV_FILES["realtime_driver_predictions"])
+    if rows is None:
+        return jsonify({"error": "File not found"}), 404
+    driver_id = request.args.get("driver_id")
+    if driver_id:
+        rows = [r for r in rows if r.get("driver_id") == driver_id]
+    return jsonify(rows)
+
+
+@app.route("/api/trip-summary", methods=["GET"])
+def get_trip_summary():
+    """Return trip summary data. Optional ?driver_id= filter."""
+    rows = read_csv_file(CSV_FILES["trip_summaries"])
     if rows is None:
         return jsonify({"error": "File not found"}), 404
     driver_id = request.args.get("driver_id")

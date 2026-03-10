@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-import Papa from "papaparse";
 import DynamicVelocityChart from "../Components/DynamicVelocityChart";
 import DriverSafetyAnalytics from "../Components/DriverSafetyAnalytics";
 import FlaggedMoments from "../Components/FlaggedMoments";
 import { FaShieldAlt, FaInfoCircle } from "react-icons/fa";
 import "../styles/TripOverview.css";
+
+const API_BASE = import.meta.env.VITE_API_URL || "";
 
 function TripOverview() {
 
@@ -28,23 +29,15 @@ function TripOverview() {
 
   useEffect(() => {
 
-    fetch("/trip_summary.csv")
-      .then(res => res.text())
-      .then(csv => {
+    fetch(`${API_BASE}/api/trip-summary`)
+      .then(res => res.json())
+      .then(data => {
 
-        Papa.parse(csv, {
-          header: true,
-          skipEmptyLines: true,
-          complete: (results) => {
+        const cleaned = data.filter(
+          r => r.driver_id
+        );
 
-            const cleaned = results.data.filter(
-              r => r.driver_id
-            );
-
-            setTripSummary(cleaned);
-
-          }
-        });
+        setTripSummary(cleaned);
 
       });
 
@@ -56,24 +49,16 @@ function TripOverview() {
 
   useEffect(() => {
 
-    fetch("/realtime_driver_predictions.csv")
-      .then(res => res.text())
-      .then(csv => {
+    fetch(`${API_BASE}/api/driver-predictions`)
+      .then(res => res.json())
+      .then(data => {
 
-        Papa.parse(csv, {
-          header: true,
-          skipEmptyLines: true,
-          complete: (results) => {
+        const cleaned = data.filter(
+          r => r.driver_id && r.timestamp
+        );
 
-            const cleaned = results.data.filter(
-              r => r.driver_id && r.timestamp
-            );
-
-            setRealtimeData(cleaned);
+        setRealtimeData(cleaned);
 setLastUpdated(new Date().toLocaleTimeString());
-
-          }
-        });
 
       });
 

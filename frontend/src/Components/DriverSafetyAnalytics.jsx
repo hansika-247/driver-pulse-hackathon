@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import Papa from "papaparse";
 import {
   PieChart,
   Pie,
@@ -21,6 +20,8 @@ import {
   Area
 } from "recharts";
 
+const API_BASE = import.meta.env.VITE_API_URL || "";
+
 function DriverSafetyAnalytics({ driverId }) {
 
   const [data, setData] = useState([]);
@@ -28,18 +29,10 @@ function DriverSafetyAnalytics({ driverId }) {
 
   useEffect(() => {
 
-    fetch("/flagged_moments_latest.csv")
-      .then(res => res.text())
-      .then(csv => {
-
-        Papa.parse(csv,{
-          header:true,
-          skipEmptyLines:true,
-          complete:(results)=>{
-            setData(results.data)
-          }
-        })
-
+    fetch(`${API_BASE}/api/flagged-moments`)
+      .then(res => res.json())
+      .then(json => {
+        setData(json)
       })
 
   },[])

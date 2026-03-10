@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import Papa from "papaparse";
 import { FaMapMarkerAlt, FaExclamationTriangle, FaRoute } from "react-icons/fa";
+
+const API_BASE = import.meta.env.VITE_API_URL || "";
 
 function findNearestGPS(accelData, tripId, elapsedSec, timestamp) {
 
@@ -43,28 +44,14 @@ function FlaggedMoments({ driverId }) {
   useEffect(()=>{
 
     Promise.all([
-      fetch("/flagged_moments_latest.csv").then(r=>r.text()),
-      fetch("/accelerometer_data.csv").then(r=>r.text()),
-      fetch("/trips.csv").then(r=>r.text())
+      fetch(`${API_BASE}/api/flagged-moments`).then(r=>r.json()),
+      fetch(`${API_BASE}/api/accelerometer`).then(r=>r.json()),
+      fetch(`${API_BASE}/api/trips`).then(r=>r.json())
     ]).then(([flags,accel,trips])=>{
 
-      Papa.parse(flags,{
-        header:true,
-        skipEmptyLines:true,
-        complete:(res)=>setData(res.data)
-      });
-
-      Papa.parse(accel,{
-        header:true,
-        skipEmptyLines:true,
-        complete:(res)=>setAccelData(res.data)
-      });
-
-      Papa.parse(trips,{
-        header:true,
-        skipEmptyLines:true,
-        complete:(res)=>setTripsData(res.data)
-      });
+      setData(flags);
+      setAccelData(accel);
+      setTripsData(trips);
 
     });
 
