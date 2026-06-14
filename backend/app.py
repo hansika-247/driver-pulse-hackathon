@@ -1,80 +1,77 @@
-import csv
-import os
-from flask import Flask, jsonify, request
-from flask_cors import CORS
+"""
+DriverPulse FastAPI Backend — app.py
+=====================================
+Entry point. Loads all shared assets once on startup, then mounts:
+  /drivers       → routes/drivers.py
+  /predict       → routes/predict.py
+  /fleet-summary → routes/leaderboard.py
+  /leaderboard   → routes/leaderboard.py
+  /insights      → routes/insights.py
 
-app = Flask(__name__)
-CORS(app)
+Legacy Flask-compat aliases are also provided so the existing frontend
+(which calls /trips, /flags, /insights, /auth/*) keeps working.
+"""
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "output_data")
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
-CSV_FILES = {
-    "flagged_moments_latest": os.path.join(OUTPUT_DIR, "flagged_moments_latest.csv"),
-    "flagged_moments": os.path.join(OUTPUT_DIR, "flagged_moments.csv"),
-    "accelerometer_data": os.path.join(OUTPUT_DIR, "accelerometer_data.csv"),
-    "trips": os.path.join(OUTPUT_DIR, "trips.csv"),
-    "realtime_driver_predictions": os.path.join(OUTPUT_DIR, "realtime_driver_predictions.csv"),
-}
-
-
-def read_csv_file(filepath):
-    if not os.path.isfile(filepath):
-        return None
-
-    with open(filepath, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        return [row for row in reader if any(row.values())]
+from services.model_loader import load_all_assets, get_store
+from routes import predict, drivers, leaderboard, insights, compat, prod_api
 
 
-@app.route("/api/flagged-moments")
-def flagged_moments():
-    rows = read_csv_file(CSV_FILES["flagged_moments_latest"])
-    driver_id = request.args.get("driver_id")
-
-    if driver_id:
-        rows = [r for r in rows if r.get("driver_id") == driver_id]
-
-    return jsonify(rows)
+# ── Lifespan: load assets exactly once ───────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    load_all_assets()
+    yield
 
 
-@app.route("/api/accelerometer")
-def accelerometer():
-    rows = read_csv_file(CSV_FILES["accelerometer_data"])
-    trip_id = request.args.get("trip_id")
+# ── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="DriverPulse API",
+    description=(
+        "Powers the DriverPulse fleet intelligence dashboard.\n\n"
+        "Endpoints:\n"
+        "- **Driver APIs** — list & profile\n"
+        "- **Prediction API** — risk classification via Random Forest\n"
+        "- **Fleet Summary** — aggregated KPIs\n"
+        "- **Leaderboard** — top 10 performers\n"
+        "- **AI Insights** — rule-based fleet observations\n"
+        "- **Compat** — legacy aliases for existing frontend"
+    ),
+    version="4.0.0",
+    lifespan=lifespan,
+)
 
-    if trip_id:
-        rows = [r for r in rows if r.get("trip_id") == trip_id]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    return jsonify(rows)
-
-
-@app.route("/api/trips")
-def trips():
-    rows = read_csv_file(CSV_FILES["trips"])
-    driver_id = request.args.get("driver_id")
-
-    if driver_id:
-        rows = [r for r in rows if r.get("driver_id") == driver_id]
-
-    return jsonify(rows)
-
-
-@app.route("/api/driver-predictions")
-def predictions():
-    rows = read_csv_file(CSV_FILES["realtime_driver_predictions"])
-    driver_id = request.args.get("driver_id")
-
-    if driver_id:
-        rows = [r for r in rows if r.get("driver_id") == driver_id]
-
-    return jsonify(rows)
+# ── Routers ───────────────────────────────────────────────────────────────────
+app.include_router(drivers.router,     tags=["Drivers"])
+app.include_router(predict.router,     tags=["Prediction"])
+app.include_router(leaderboard.router, tags=["Fleet & Leaderboard"])
+app.include_router(insights.router,    tags=["AI Insights"])
+app.include_router(compat.router,      tags=["Legacy Compat"])
+app.include_router(prod_api.router)
 
 
-@app.route("/api/health")
+# ── Health ────────────────────────────────────────────────────────────────────
+@app.get("/health", summary="Health check")
 def health():
-    return jsonify({"status": "ok"})
+    store = get_store()
+    return {
+        "status": "ok",
+        "model_loaded": store.get("model") is not None,
+        "drivers_loaded": store.get("df") is not None,
+        "total_drivers": len(store["df"]) if store.get("df") is not None else 0,
+    }
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
